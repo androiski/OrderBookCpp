@@ -24,7 +24,7 @@ class OrderBook {
 
         struct LevelData {
             Quantity quantity_{};
-            Quantity count_P{};
+            Quantity count_{};
 
             enum class Action{
                 Add,

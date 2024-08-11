@@ -4,8 +4,7 @@
 #include <chrono>
 #include <ctime>
 
-void OrderBook::PruneGoodForDayOrders()
-{
+void OrderBook::PruneGoodForDayOrders(){
     using namespace std::chrono;
     const auto end = hours(16);
 
@@ -66,6 +65,86 @@ void OrderBook::CancelOrderInternal(OrderId orderId){
         auto& orders = asks_.at(price);
         orders.erase(iterator);
         if (orders.empty()) asks_.erase(price);
+    }else{
+        auto price = order->GetPrice();
+        auto& orders = bids_.at(price);
+        orders.erase(iterator);
+        if (orders.empty()) bids_.erase(price);
     }
+
+    OnOrderCancelled(order);
 }
 
+void OrderBook::OnOrderCancelled(OrderPointer order){
+    UpdateLevelData(order->GetPrice(), order->GetRemainingQuantity(), LevelData::Action::Remove);
+}
+
+void OrderBook::OnOrderAdded(OrderPointer order){
+    UpdateLevelData(order->GetPrice(), order->GetInitialQuanity(), LevelData::Action::Add);
+}
+
+void OrderBook::OnOrderMatched(Price price, Quantity quantity, bool isFullyFilled){
+    UpdateLevelData(price, quantity, isFullyFilled ? LevelData::Action::Remove : LevelData::Action::Match);
+}
+
+void OrderBook::UpdateLevelData(Price price, Quantity quantity, LevelData::Action action){
+    auto& data = data_[price];
+
+    data.count_ += action == LevelData::Action::Remove ? -1 : action == LevelData::Action::Add ? 1 : 0;
+    if (action == LevelData::Action::Remove || action == LevelData::Action::Match){
+        data.quantity_ -= quantity;
+    }
+    else{
+        data.quantity_ += quantity;
+    }
+
+    if (data.count_ == 0) data_.erase(price);
+}
+
+bool OrderBook::CanFullyFill(Side side, Price price, Quantity quantity) const{
+    if (!CanMatch(side, price)) return false;
+
+    std::optional<Price> threshold;
+
+    if (side == Side::Buy){
+        const auto [askPrice, _] = *asks_.begin();
+        threshold = askPrice;
+    }
+    else{
+        const auto [bidPrice, _] = *bids_.begin();
+        threshold = bidPrice;
+    }
+
+    for (const auto& [levelPrice, levelData] : data_){
+        if (threshold.has_value() &&
+            (side == Side::Buy && threshold.value() > levelPrice) ||
+            (side == Side::Sell && threshold.value() < levelPrice))
+                continue;
+
+        if ((side == Side::Buy && levelPrice > price) ||
+            (side == Side::Sell && levelPrice < price))
+                continue;
+
+        if (quantity <= levelData.quantity_) return true;
+
+        quantity -= levelData.quantity_;
+    }
+
+    return false;
+
+}
+
+bool OrderBook::CanMatch(Side side, Price price) const {
+    if (side == Side::Buy){
+        if (asks_.empty()) return false;
+
+        const auto& [bestAsk, _] = *asks_.begin();
+        return price >= bestAsk;
+    }
+    else{
+        if (bids_.empty()) return false;
+
+        const auto& [bestBid, _] = *bids_.begin();
+        return price <= bestBid;
+    }
+}
